@@ -20,6 +20,7 @@ type Task = {
   label: string;
   dayLabel: string;
   icon: React.ElementType;
+  applyIntervalDays?: number; // Interval for next application in days
 };
 
 type Plant = {
@@ -37,16 +38,18 @@ type ApplicationEvent = {
 
 const LOCAL_STORAGE_KEY_TIMESTAMPS = 'gardenifyAppliedTimestamps';
 const LOCAL_STORAGE_KEY_APPLICATIONS = 'gardenifyApplications';
+const LOCAL_STORAGE_KEY_LAST_APP_DATES = 'gardenifyLastApplicationDates';
 
 export default function Home() {
   // Memoize staticTasks so its identity is stable
   const staticTasks = useMemo<Task[]>(
     () => [
-      { label: 'Pest Control - Chemical 🧪', dayLabel: 'Day 1', icon: Droplets },
-      { label: 'Pest Control - Neem 🌿', dayLabel: 'Day 7', icon: Leaf },
-      { label: 'Fungicide 🍄', dayLabel: 'Day 15', icon: Flower },
-      { label: 'Mustard Fertilizer 🌱', dayLabel: 'Day 22', icon: Sprout },
-      { label: 'PGR Application 🪴', dayLabel: 'Day 30', icon: Sun },
+      { label: 'Pest Control - Ch🧪', dayLabel: 'Day 1', icon: Droplets, applyIntervalDays: 7 },
+      { label: 'Pest Control - Neem 🌿', dayLabel: 'Day 7', icon: Leaf, applyIntervalDays: 7 },
+      { label: 'Chemical Fertilizer 🔬', dayLabel: 'Day 18', icon: Sprout, applyIntervalDays: 30 }, // 1 time in 30 days
+      { label: 'Fungicide 🍄', dayLabel: 'Day 15', icon: Flower, applyIntervalDays: 15 }, // Twice a month -> ~15 days
+      { label: 'Mustard Fertilizer 🌱', dayLabel: 'Day 22', icon: Sprout, applyIntervalDays: 15 }, // Two times a month -> ~15 days
+      { label: 'PGR Application 🪴', dayLabel: 'Day 30', icon: Sun, applyIntervalDays: 30 }, // 1 time in a month -> 30 days
     ],
     []
   );
@@ -57,6 +60,7 @@ export default function Home() {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY_TIMESTAMPS);
       if (saved) {
         const parsed = JSON.parse(saved);
+        // Ensure the loaded data matches the current number of tasks
         if (Array.isArray(parsed) && parsed.length === staticTasks.length) {
           return parsed;
         }
@@ -79,17 +83,50 @@ export default function Home() {
     return [];
   });
 
+  // State to store last application dates for countdown
+  const [lastApplicationDates, setLastApplicationDates] = useState<Record<string, string>>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_LAST_APP_DATES);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    }
+    return {};
+  });
+
+  // State for triggering daily re-render to update countdowns
+  const [currentDate, setCurrentDate] = useState(new Date());
+
+  // Effect to save appliedTimestamps to local storage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem(LOCAL_STORAGE_KEY_TIMESTAMPS, JSON.stringify(appliedTimestamps));
     }
   }, [appliedTimestamps]);
 
+  // Effect to save applications to local storage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem(LOCAL_STORAGE_KEY_APPLICATIONS, JSON.stringify(applications));
     }
   }, [applications]);
+
+  // Effect to save last application dates to local storage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_KEY_LAST_APP_DATES, JSON.stringify(lastApplicationDates));
+    }
+  }, [lastApplicationDates]);
+
+  // Effect to update current date daily for countdown refresh
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentDate(new Date());
+    }, 1000 * 60 * 60 * 24); // Update once every 24 hours (daily)
+    // For testing, you might change this to a shorter interval like 1000 * 10 (10 seconds)
+
+    return () => clearInterval(timer); // Cleanup on unmount
+  }, []);
 
   const formatIsoTimestamp = (date: Date) => {
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -125,15 +162,54 @@ export default function Home() {
       { label: task.label, dayLabel: task.dayLabel, timestampIso: iso },
       ...prev,
     ]);
+
+    // Update last application date for the specific task if it has an interval
+    if (task.applyIntervalDays !== undefined) {
+      setLastApplicationDates((prev) => ({
+        ...prev,
+        [task.label]: now.toISOString(), // Store as ISO string for easier date calculations
+      }));
+    }
   };
+
+  const calculateCountdown = useCallback((taskLabel: string, intervalDays: number | undefined) => {
+    if (intervalDays === undefined) return null; // No interval defined for this task
+
+    const lastAppliedIso = lastApplicationDates[taskLabel];
+
+    // --- CHANGE HERE: Only return countdown if task has been applied at least once ---
+    if (!lastAppliedIso) {
+      return null; // Don't show countdown until first application
+    }
+    // --- END CHANGE ---
+
+    const lastAppliedDate = new Date(lastAppliedIso);
+    const nextApplicationDate = new Date(lastAppliedDate);
+    nextApplicationDate.setDate(lastAppliedDate.getDate() + intervalDays); // Calculate target date
+
+    // Set hours, minutes, seconds, milliseconds of nextApplicationDate to 00:00:00.000 for accurate day calculation
+    nextApplicationDate.setHours(0, 0, 0, 0);
+    currentDate.setHours(0, 0, 0, 0); // Also zero out current date's time for fair comparison
+
+    const diffTime = nextApplicationDate.getTime() - currentDate.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays <= 0) {
+      return { text: 'Deadline Over', status: 'overdue' }; // Deadline passed
+    } else {
+      return { text: `Next Apply in ${diffDays} days`, status: 'countdown' };
+    }
+  }, [lastApplicationDates, currentDate]); // currentDate is a dependency to trigger re-calculation daily
 
   const handleReset = useCallback(() => {
     if (typeof window !== 'undefined') {
       localStorage.removeItem(LOCAL_STORAGE_KEY_TIMESTAMPS);
       localStorage.removeItem(LOCAL_STORAGE_KEY_APPLICATIONS);
+      localStorage.removeItem(LOCAL_STORAGE_KEY_LAST_APP_DATES); // Reset last application dates
     }
     setAppliedTimestamps(staticTasks.map(() => []));
     setApplications([]);
+    setLastApplicationDates({}); // Clear last application dates state
   }, [staticTasks]);
 
   const totalApplied = appliedTimestamps.flat().length;
@@ -241,6 +317,8 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
             {tasks.map((task, idx) => {
               const TaskIcon = task.icon;
+              const countdown = calculateCountdown(task.label, task.applyIntervalDays);
+
               return (
                 <motion.div
                   key={idx}
@@ -270,7 +348,7 @@ export default function Home() {
                         Recent Applications:
                       </h4>
                       <ul className="space-y-1">
-                        {appliedTimestamps[idx].map((tsStr, i) => (
+                        {appliedTimestamps[idx].slice(-3).map((tsStr, i) => ( // Show last 3 applications
                           <motion.li
                             key={i}
                             initial={{ opacity: 0, x: -10 }}
@@ -284,6 +362,19 @@ export default function Home() {
                         ))}
                       </ul>
                     </div>
+                  )}
+                  {countdown && ( // Only render if countdown is not null
+                    <motion.div
+                      key={`countdown-${idx}-${countdown.text}`} // Key to trigger re-animation on change
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ type: 'spring', stiffness: 100, damping: 10, delay: 0.1 }}
+                      className={`mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-zinc-700 text-center text-sm sm:text-base font-semibold ${
+                        countdown.status === 'overdue' ? 'text-red-400' : 'text-amber-300'
+                      }`}
+                    >
+                      {countdown.text}
+                    </motion.div>
                   )}
                   <div className="mt-auto flex flex-col sm:flex-row items-center justify-between pt-3 sm:pt-4 gap-3 sm:gap-0">
                     <motion.button
