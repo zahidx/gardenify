@@ -47,7 +47,8 @@ export default function Home() {
       { label: 'Pest Control - Ch🧪', dayLabel: 'Day 1', icon: Droplets, applyIntervalDays: 7 },
       { label: 'Pest Control - Neem 🌿', dayLabel: 'Day 7', icon: Leaf, applyIntervalDays: 7 },
       { label: 'Chemical Fertilizer 🔬', dayLabel: 'Day 18', icon: Sprout, applyIntervalDays: 30 }, // 1 time in 30 days
-      { label: 'Fungicide 🍄', dayLabel: 'Day 15', icon: Flower, applyIntervalDays: 15 }, // Twice a month -> ~15 days
+      { label: 'Fungicide - Amistar Top 🍄', dayLabel: 'Day 15', icon: Flower, applyIntervalDays: 30 }, // Changed to 30 days
+      { label: 'Fungicide - Masnsar 🧪', dayLabel: 'Day 20', icon: Flower, applyIntervalDays: 30 }, // New task
       { label: 'Mustard Fertilizer 🌱', dayLabel: 'Day 22', icon: Sprout, applyIntervalDays: 15 }, // Two times a month -> ~15 days
       { label: 'PGR Application 🪴', dayLabel: 'Day 30', icon: Sun, applyIntervalDays: 30 }, // 1 time in a month -> 30 days
     ],
