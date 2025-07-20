@@ -8,219 +8,216 @@ import {
   Leaf,
   Droplets,
   Sun,
-  ClipboardList,
   History,
   Flower,
   RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 
+// Firebase Imports
+import { db } from '../lib/firebase'; // Adjust path if needed
+import {
+  collection,
+  doc,
+  getDocs,
+  getDoc,
+  setDoc,
+  addDoc,
+  writeBatch,
+  query,
+  orderBy,
+  serverTimestamp,
+  FieldValue, // <-- FIX: Import FieldValue
+} from 'firebase/firestore';
+
 // Type definitions
 type Task = {
   label: string;
   dayLabel: string;
   icon: React.ElementType;
-  applyIntervalDays?: number; // Interval for next application in days
-};
-
-type Plant = {
-  name: string;
-  lastWatered: string;
-  nextTask: string;
-  icon: React.ElementType;
+  applyIntervalDays?: number;
 };
 
 type ApplicationEvent = {
+  id?: string; // Add ID for keying
   label: string;
   dayLabel: string;
   timestampIso: string;
 };
 
-const LOCAL_STORAGE_KEY_TIMESTAMPS = 'gardenifyAppliedTimestamps';
-const LOCAL_STORAGE_KEY_APPLICATIONS = 'gardenifyApplications';
-const LOCAL_STORAGE_KEY_LAST_APP_DATES = 'gardenifyLastApplicationDates';
+// Firestore collection references
+const applicationsCollection = collection(db, 'applications');
+const lastDatesDoc = doc(db, 'metadata', 'lastApplicationDates');
 
 export default function Home() {
-  // Memoize staticTasks so its identity is stable
   const staticTasks = useMemo<Task[]>(
     () => [
       { label: 'Pest Control - Ch🧪', dayLabel: 'Day 1', icon: Droplets, applyIntervalDays: 7 },
       { label: 'Pest Control - Neem 🌿', dayLabel: 'Day 7', icon: Leaf, applyIntervalDays: 7 },
-      { label: 'Chemical Fertilizer 🔬', dayLabel: 'Day 18', icon: Sprout, applyIntervalDays: 30 }, // 1 time in 30 days
-      { label: 'Fungicide - Amistar Top 🍄', dayLabel: 'Day 15', icon: Flower, applyIntervalDays: 30 }, // Changed to 30 days
-      { label: 'Fungicide - Masnsar 🧪', dayLabel: 'Day 20', icon: Flower, applyIntervalDays: 30 }, // New task
-      { label: 'Mustard Fertilizer 🌱', dayLabel: 'Day 22', icon: Sprout, applyIntervalDays: 15 }, // Two times a month -> ~15 days
-      { label: 'PGR Application 🪴', dayLabel: 'Day 30', icon: Sun, applyIntervalDays: 30 }, // 1 time in a month -> 30 days
+      { label: 'Fungicide - Amistar Top 🍄', dayLabel: 'Day 15', icon: Flower, applyIntervalDays: 30 },
+      { label: 'Chemical Fertilizer 🔬', dayLabel: 'Day 18', icon: Sprout, applyIntervalDays: 30 },
+      { label: 'Fungicide - Masnsar 🧪', dayLabel: 'Day 20', icon: Flower, applyIntervalDays: 30 },
+      { label: 'Mustard Fertilizer 🌱', dayLabel: 'Day 22', icon: Sprout, applyIntervalDays: 15 },
+      { label: 'Cow Dung & Vermicompost 🐮', dayLabel: 'Day 26', icon: Sprout },
+      { label: 'PGR Application 🪴', dayLabel: 'Day 30', icon: Sun, applyIntervalDays: 30 },
     ],
     []
   );
   const [tasks] = useState<Task[]>(staticTasks);
 
-  const [appliedTimestamps, setAppliedTimestamps] = useState<string[][]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_TIMESTAMPS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Ensure the loaded data matches the current number of tasks
-        if (Array.isArray(parsed) && parsed.length === staticTasks.length) {
-          return parsed;
-        }
-      }
-    }
-    return staticTasks.map(() => []);
-  });
+  // State is now initialized as empty, will be populated from Firebase
+  const [applications, setApplications] = useState<ApplicationEvent[]>([]);
+  const [lastApplicationDates, setLastApplicationDates] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(true); // Loading state for initial fetch
 
-  const [applications, setApplications] = useState<ApplicationEvent[]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_APPLICATIONS);
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch {
-          return [];
-        }
-      }
-    }
-    return [];
-  });
-
-  // State to store last application dates for countdown
-  const [lastApplicationDates, setLastApplicationDates] = useState<Record<string, string>>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_LAST_APP_DATES);
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    }
-    return {};
-  });
-
-  // State for triggering daily re-render to update countdowns
+  // State for triggering daily re-render for countdowns
   const [currentDate, setCurrentDate] = useState(new Date());
 
-  // Effect to save appliedTimestamps to local storage
+  // --- Data Fetching from Firebase ---
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_TIMESTAMPS, JSON.stringify(appliedTimestamps));
-    }
-  }, [appliedTimestamps]);
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        // Fetch all applications, ordered by timestamp descending
+        const q = query(applicationsCollection, orderBy('timestamp', 'desc'));
+        const appSnapshot = await getDocs(q);
+        const appData = appSnapshot.docs.map(
+          (doc) => ({ id: doc.id, ...doc.data() } as ApplicationEvent)
+        );
+        setApplications(appData);
 
-  // Effect to save applications to local storage
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_APPLICATIONS, JSON.stringify(applications));
-    }
-  }, [applications]);
+        // Fetch the single document for last application dates
+        const datesSnapshot = await getDoc(lastDatesDoc);
+        if (datesSnapshot.exists()) {
+          setLastApplicationDates(datesSnapshot.data());
+        }
+      } catch (error) {
+        console.error('Error fetching data from Firebase:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-  // Effect to save last application dates to local storage
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_LAST_APP_DATES, JSON.stringify(lastApplicationDates));
-    }
-  }, [lastApplicationDates]);
+    fetchData();
+  }, []);
 
   // Effect to update current date daily for countdown refresh
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentDate(new Date());
-    }, 1000 * 60 * 60 * 24); // Update once every 24 hours (daily)
-    // For testing, you might change this to a shorter interval like 1000 * 10 (10 seconds)
-
-    return () => clearInterval(timer); // Cleanup on unmount
+    const timer = setInterval(() => setCurrentDate(new Date()), 1000 * 60 * 60 * 24);
+    return () => clearInterval(timer);
   }, []);
 
-  const formatIsoTimestamp = (date: Date) => {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-      date.getHours()
-    )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-  };
-  const formatMonthDay = (date: Date) => {
-    const names = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December',
-    ];
-    return `${names[date.getMonth()]} ${date.getDate()}`;
-  };
-  const formatHourMinute = (date: Date) => {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${date.getHours()}:${pad(date.getMinutes())}`;
-  };
+  // --- Derive `appliedTimestamps` from the `applications` state ---
+  const appliedTimestamps = useMemo(() => {
+    const newTimestamps: string[][] = staticTasks.map(() => []);
+    const formatMonthDay = (date: Date) =>
+      `${
+        ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][
+          date.getMonth()
+        ]
+      } ${date.getDate()}`;
+    const formatHourMinute = (date: Date) =>
+      `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
 
-  const handleApply = (index: number) => {
-    const now = new Date();
-    const iso = formatIsoTimestamp(now);
-    const friendly = `${formatMonthDay(now)} – ${formatHourMinute(now)}`;
-
-    setAppliedTimestamps((prev) => {
-      const next = prev.map((arr) => [...arr]);
-      next[index].push(friendly);
-      return next;
+    applications.forEach((appEvent) => {
+      const taskIndex = staticTasks.findIndex((task) => task.label === appEvent.label);
+      if (taskIndex !== -1) {
+        const date = new Date(appEvent.timestampIso);
+        const friendlyFormat = `${formatMonthDay(date)} – ${formatHourMinute(date)}`;
+        newTimestamps[taskIndex].push(friendlyFormat);
+      }
     });
+    return newTimestamps;
+  }, [applications, staticTasks]);
 
+  // --- CRUD Functions for Firebase ---
+
+  const handleApply = async (index: number) => {
     const task = tasks[index];
-    setApplications((prev) => [
-      { label: task.label, dayLabel: task.dayLabel, timestampIso: iso },
-      ...prev,
-    ]);
+    const now = new Date();
+    const iso = now.toISOString();
 
-    // Update last application date for the specific task if it has an interval
-    if (task.applyIntervalDays !== undefined) {
-      setLastApplicationDates((prev) => ({
-        ...prev,
-        [task.label]: now.toISOString(), // Store as ISO string for easier date calculations
-      }));
+    const newApplication: Omit<ApplicationEvent, 'id'> & { timestamp: FieldValue } = { // <-- FIX: Use FieldValue
+      label: task.label,
+      dayLabel: task.dayLabel,
+      timestampIso: iso,
+      timestamp: serverTimestamp(),
+    };
+
+    try {
+      // 1. Add new application to the 'applications' collection
+      const docRef = await addDoc(applicationsCollection, newApplication);
+
+      // Optimistically update UI
+      setApplications((prev) => [{ id: docRef.id, ...newApplication, timestampIso: iso }, ...prev]);
+
+      // 2. Update the last application date if interval exists
+      if (task.applyIntervalDays !== undefined) {
+        const newLastDate = { [task.label]: iso };
+        await setDoc(lastDatesDoc, newLastDate, { merge: true });
+
+        // Optimistically update UI
+        setLastApplicationDates((prev) => ({ ...prev, ...newLastDate }));
+      }
+    } catch (error) {
+      console.error('Error applying task:', error);
     }
   };
 
-  const calculateCountdown = useCallback((taskLabel: string, intervalDays: number | undefined) => {
-    if (intervalDays === undefined) return null; // No interval defined for this task
-
-    const lastAppliedIso = lastApplicationDates[taskLabel];
-
-    // --- CHANGE HERE: Only return countdown if task has been applied at least once ---
-    if (!lastAppliedIso) {
-      return null; // Don't show countdown until first application
+  const handleReset = useCallback(async () => {
+    if (!confirm('Are you sure you want to reset all data? This cannot be undone.')) {
+      return;
     }
-    // --- END CHANGE ---
 
-    const lastAppliedDate = new Date(lastAppliedIso);
-    const nextApplicationDate = new Date(lastAppliedDate);
-    nextApplicationDate.setDate(lastAppliedDate.getDate() + intervalDays); // Calculate target date
+    try {
+      // Use a batch write for atomic deletion
+      const batch = writeBatch(db);
 
-    // Set hours, minutes, seconds, milliseconds of nextApplicationDate to 00:00:00.000 for accurate day calculation
-    nextApplicationDate.setHours(0, 0, 0, 0);
-    currentDate.setHours(0, 0, 0, 0); // Also zero out current date's time for fair comparison
+      // Delete all documents in the 'applications' collection
+      const appSnapshot = await getDocs(applicationsCollection);
+      appSnapshot.forEach((doc) => batch.delete(doc.ref));
 
-    const diffTime = nextApplicationDate.getTime() - currentDate.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      // Delete the 'lastApplicationDates' document
+      batch.delete(lastDatesDoc);
 
-    if (diffDays <= 0) {
-      return { text: 'Deadline Over', status: 'overdue' }; // Deadline passed
-    } else {
-      return { text: `Next Apply in ${diffDays} days`, status: 'countdown' };
+      await batch.commit();
+
+      // Clear local state
+      setApplications([]);
+      setLastApplicationDates({});
+      console.log('All data reset successfully.');
+    } catch (error) {
+      console.error('Error resetting data:', error);
     }
-  }, [lastApplicationDates, currentDate]); // currentDate is a dependency to trigger re-calculation daily
+  }, []);
 
-  const handleReset = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(LOCAL_STORAGE_KEY_TIMESTAMPS);
-      localStorage.removeItem(LOCAL_STORAGE_KEY_APPLICATIONS);
-      localStorage.removeItem(LOCAL_STORAGE_KEY_LAST_APP_DATES); // Reset last application dates
-    }
-    setAppliedTimestamps(staticTasks.map(() => []));
-    setApplications([]);
-    setLastApplicationDates({}); // Clear last application dates state
-  }, [staticTasks]);
+  const calculateCountdown = useCallback(
+    (taskLabel: string, intervalDays: number | undefined) => {
+      if (intervalDays === undefined) return null;
+      const lastAppliedIso = lastApplicationDates[taskLabel];
+      if (!lastAppliedIso) return null;
 
-  const totalApplied = appliedTimestamps.flat().length;
+      const lastAppliedDate = new Date(lastAppliedIso);
+      const nextApplicationDate = new Date(lastAppliedDate);
+      nextApplicationDate.setDate(lastAppliedDate.getDate() + intervalDays);
+      nextApplicationDate.setHours(0, 0, 0, 0);
 
-  const plants: Plant[] = [
-    { name: 'Tomato 🍅', lastWatered: '2 days ago', nextTask: 'Fertilize in 3 days', icon: Sprout },
-    { name: 'Rose 🌹', lastWatered: '1 day ago', nextTask: 'Prune in 5 days', icon: Flower },
-    { name: 'Basil 🌿', lastWatered: 'Today', nextTask: 'Pest control in 4 days', icon: Leaf },
-    { name: 'Lemon Tree 🍋', lastWatered: '3 days ago', nextTask: 'Spray fungicide in 2 days', icon: Sun },
-  ];
+      const today = new Date(currentDate); // Use a copy to avoid mutation
+      today.setHours(0, 0, 0, 0);
+
+      const diffTime = nextApplicationDate.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays <= 0) {
+        return { text: 'Deadline Over', status: 'overdue' };
+      } else {
+        return { text: `Next Apply in ${diffDays} days`, status: 'countdown' };
+      }
+    },
+    [lastApplicationDates, currentDate]
+  );
+
+  const totalApplied = applications.length;
 
   // Typed variants
   const sectionVariants: Variants = {
@@ -264,6 +261,17 @@ export default function Home() {
     tap: { scale: 0.9 },
   };
 
+  if (isLoading) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-gray-900 to-zinc-950 flex items-center justify-center">
+        <div className="text-center">
+          <Sprout className="w-16 h-16 text-lime-400 animate-bounce" />
+          <p className="text-xl text-gray-300 mt-4">Loading your garden...</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-zinc-950 py-6 sm:py-10 px-4 sm:px-6 lg:px-8 text-gray-100 overflow-hidden">
       <div className="max-w-6xl mx-auto space-y-8 sm:space-y-12">
@@ -273,7 +281,7 @@ export default function Home() {
             initial={{ y: -50, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ type: 'spring', stiffness: 120, damping: 10, delay: 0.1 }}
-            className="text-4xl sm:text-5xl font-extrabold text-emerald-400 flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3 drop-shadow-lg"
+            className="text-4xl sm:text-5xl font-extrabold text-emerald-400 flex items-center justify-center gap-3 drop-shadow-lg"
           >
             <Sprout className="w-8 h-8 sm:w-10 sm:h-10 text-lime-400" />
             Gardenify
@@ -319,6 +327,7 @@ export default function Home() {
             {tasks.map((task, idx) => {
               const TaskIcon = task.icon;
               const countdown = calculateCountdown(task.label, task.applyIntervalDays);
+              const appliedCountForTask = appliedTimestamps[idx].length;
 
               return (
                 <motion.div
@@ -343,18 +352,23 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
-                  {appliedTimestamps[idx].length > 0 && (
+                  {appliedCountForTask > 0 && (
                     <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-zinc-700">
                       <h4 className="text-xs sm:text-sm font-medium text-gray-300 mb-1 sm:mb-2">
                         Recent Applications:
                       </h4>
                       <ul className="space-y-1">
-                        {appliedTimestamps[idx].slice(-3).map((tsStr, i) => ( // Show last 3 applications
+                        {appliedTimestamps[idx].slice(0, 3).map((tsStr, i) => (
                           <motion.li
                             key={i}
                             initial={{ opacity: 0, x: -10 }}
                             animate={{ opacity: 1, x: 0 }}
-                            transition={{ type: 'spring', stiffness: 100, damping: 10, delay: i * 0.03 }}
+                            transition={{
+                              type: 'spring',
+                              stiffness: 100,
+                              damping: 10,
+                              delay: i * 0.03,
+                            }}
                             className="flex items-center gap-2 text-xs sm:text-sm text-sky-300 bg-sky-900/50 px-2 py-0.5 sm:px-3 sm:py-1 rounded-md sm:rounded-lg border border-sky-800"
                           >
                             <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-sky-400 rounded-full flex-shrink-0" />
@@ -364,9 +378,9 @@ export default function Home() {
                       </ul>
                     </div>
                   )}
-                  {countdown && ( // Only render if countdown is not null
+                  {countdown && (
                     <motion.div
-                      key={`countdown-${idx}-${countdown.text}`} // Key to trigger re-animation on change
+                      key={`countdown-${idx}-${countdown.text}`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ type: 'spring', stiffness: 100, damping: 10, delay: 0.1 }}
@@ -389,16 +403,16 @@ export default function Home() {
                       Apply Now
                     </motion.button>
                     <AnimatePresence>
-                      {appliedTimestamps[idx].length > 0 && (
+                      {appliedCountForTask > 0 && (
                         <motion.span
-                          key={appliedTimestamps[idx].length}
+                          key={appliedCountForTask}
                           initial={{ scale: 0.8, opacity: 0 }}
                           animate={{ scale: 1, opacity: 1 }}
                           exit={{ opacity: 0, scale: 0.8 }}
                           transition={{ duration: 0.2 }}
                           className="bg-yellow-900/50 text-yellow-300 text-xs sm:text-sm px-2 py-0.5 sm:px-3 sm:py-1 rounded-full font-medium shadow-sm border border-yellow-800"
                         >
-                          Applied {appliedTimestamps[idx].length} times
+                          Applied {appliedCountForTask} times
                         </motion.span>
                       )}
                     </AnimatePresence>
@@ -426,7 +440,7 @@ export default function Home() {
               {applications.length > 0 ? (
                 applications.map((event, i) => (
                   <motion.li
-                    key={i}
+                    key={event.id}
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
@@ -456,49 +470,6 @@ export default function Home() {
               )}
             </AnimatePresence>
           </ul>
-        </motion.section>
-
-        {/* My Plants */}
-        <motion.section
-          variants={sectionVariants}
-          initial="initial"
-          animate="animate"
-          whileHover="hover"
-          className="glass-effect rounded-2xl sm:rounded-3xl shadow-2xl border border-zinc-700 p-6 sm:p-8 relative overflow-hidden"
-        >
-          <h2 className="text-2xl sm:text-3xl font-bold text-emerald-400 mb-4 sm:mb-5 flex items-center gap-2 sm:gap-3">
-            <Leaf className="w-7 h-7 sm:w-8 sm:h-8 text-lime-400" />
-            My Plants <span className="text-xl sm:text-2xl ml-1 sm:ml-2">🪴</span>
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
-            {plants.map((plant, idx) => {
-              const PlantIcon = plant.icon;
-              return (
-                <motion.div
-                  key={idx}
-                  variants={cardVariants}
-                  initial="initial"
-                  animate="animate"
-                  whileHover="hover"
-                  transition={{ delay: idx * 0.1 }}
-                  className="flex flex-col bg-zinc-900/50 border border-zinc-700 p-5 sm:p-6 rounded-xl sm:rounded-2xl shadow-xl"
-                >
-                  <div className="flex items-center gap-2 sm:gap-3 mb-2 sm:mb-3">
-                    <PlantIcon className="w-6 h-6 sm:w-7 sm:h-7 text-lime-400" />
-                    <h3 className="text-xl sm:text-2xl font-bold text-gray-100">{plant.name}</h3>
-                  </div>
-                  <p className="text-sm sm:text-md text-gray-300 flex items-center gap-2 mb-1 sm:mb-2">
-                    <Droplets className="w-4 h-4 sm:w-5 sm:h-5 text-sky-400" /> Last watered:{' '}
-                    <span className="font-medium text-sky-300">{plant.lastWatered}</span> 💧
-                  </p>
-                  <p className="text-sm sm:text-md text-gray-300 flex items-center gap-2">
-                    <ClipboardList className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" /> Next task:{' '}
-                    <span className="font-medium text-amber-300">{plant.nextTask}</span> 📝
-                  </p>
-                </motion.div>
-              );
-            })}
-          </div>
         </motion.section>
       </div>
 
